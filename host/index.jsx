@@ -3,8 +3,26 @@
  */
 var host = {
     /**
-     * Mutes an audio track of the active sequence.
-     * @param trackNumber the 0 based audio track number
+     * @swagger
+     *
+     * /kill:
+     *      get:
+     *          description: This method is only there for debugging purposes.
+     */
+    kill: function () {
+    },
+    /**
+     * @swagger
+     *
+     * /muteAudioTrack?trackNumber={trackNumber}:
+     *      get:
+     *          description: Mutes an audio track of the active sequence.
+     *          parameters:
+     *              - name: trackNumber
+     *                description: the 0 based audio track number
+     *                in: path
+     *                type: number
+>>>>>>> upstream/master
      */
     muteAudioTrack: function (trackNumber) { // 0 based
         trackNumber = parseInt(trackNumber);
@@ -116,10 +134,25 @@ var host = {
      * Short explanation: I use the topmost video track with setting layer as markers due to the better support in premiere.
      */
     selectCurrentMarker: function () {
+        this.deselectAllMarkers();
         var clip = helper.getCurrentMarkerClip();
 
         if (clip !== undefined) {
             clip.setSelected(true);
+        }
+    },
+    /**
+     * Deselects all markers in the marker layer.
+     */
+    deselectAllMarkers: function() {
+        var currentSequence = app.project.activeSequence;
+        var markerLayer = currentSequence.videoTracks[currentSequence.videoTracks.numTracks - 1];
+        var markerClips = markerLayer.clips;
+        var markerCount = markerClips.numItems;
+
+        for (var i = 0; i < markerCount; i++) {
+            var clip = markerClips[i];
+            clip.setSelected(false);
         }
     },
     /**
@@ -136,25 +169,18 @@ var host = {
     /**
      * Adds a new marker (NO normal marker, a settings layer, see above) to the current playhead position.
      */
-    addCustomMarker: function () {
+    addCustomMarker: function (color) {
         var currentSequence = app.project.activeSequence;
         var markerLayer = currentSequence.videoTracks[currentSequence.videoTracks.numTracks - 1];
+        
+        helper.fixPlayHeadPosition(helper.projectFrameRate);
         var currentPlayheadPosition = currentSequence.getPlayerPosition();
+        
 
-        var markerChild = undefined;
-
-        for (var i = 0; i < app.project.rootItem.children.numItems; i++) {
-
-            var child = app.project.rootItem.children[i];
-            if (child.name === "MARKER") {
-                markerChild = child;
-                break;
-            }
-
-        }
+        var markerChild = helper.getMarkerItemInMarkerFolder(color);
 
         if (markerChild === undefined) {
-            alert("No settings layer called 'MARKER' found!");
+            alert("No 'marker' folder found. Please use a viable preset.");
         } else {
             markerLayer.overwriteClip(markerChild, currentPlayheadPosition);
         }
@@ -208,6 +234,111 @@ var host = {
         fileNew.open("w");
         fileNew.write(output);
         fileNew.close();
+    },
+    /**
+     * Inserts a name project item (from root folder) into an audio/video track, with an optional delta.
+     * @param trackNumber the zero-based track number
+     * @param itemName the name of the item, e.g. "my_first_video.mp4"
+     * @param deltaInTicks the delta in ticks to move from the playhead position. Default: 0
+     * @param isVideoTrack true, if the clip should be inserted in a video track, false if audio track
+     */
+    insertNamedRootItemIntoTrack: function (trackNumber, itemName, deltaInTicks, isVideoTrack) {
+
+        var activeSequence = app.project.activeSequence;
+
+        // Get player position and add delta
+        var currentPlayheadPosition = activeSequence.getPlayerPosition();
+        currentPlayheadPosition.ticks = (parseInt(currentPlayheadPosition.ticks) + parseInt(deltaInTicks)).toString();
+
+        var targetTrack;
+        if (isVideoTrack === "true") {
+            if (parseInt(trackNumber) < activeSequence.videoTracks.numTracks) {
+                targetTrack = activeSequence.videoTracks[parseInt(trackNumber)];
+            } else {
+                alert("Bad video track number.");
+            }
+        } else {
+            if (parseInt(trackNumber) < activeSequence.audioTracks.numTracks) {
+                targetTrack = activeSequence.audioTracks[parseInt(trackNumber)];
+            } else {
+                alert("Bad audio track number.");
+            }
+        }
+
+        var projectItem = helper.getProjectItemInRoot(itemName);
+
+        if (projectItem === undefined) {
+            alert("Specified item with name '" + projectItem + "' not found in project root.");
+        } else {
+            targetTrack.overwriteClip(projectItem, currentPlayheadPosition);
+        }
+    },
+
+    /**
+     * Loads serialized marker information from a CSV file, creates top layer markers for it.
+     * Note: To work properly, a marker-bin with 15 setting layers (all 15 colors) is required.
+     */
+    loadMarkersFromCSVFile: function () {
+        var csvFileDialog = File.openDialog("Target CSV File", "*.csv");
+        var csvFile = csvFileDialog.fsName;
+
+        var currentSequence = app.project.activeSequence;
+        var markerLayer = currentSequence.videoTracks[currentSequence.videoTracks.numTracks - 1];
+        var currentPlayheadPosition = currentSequence.getPlayerPosition();
+
+        if (csvFile) {
+
+            var file = File(csvFile);
+            file.open("r");
+            var fullText = file.read();
+            file.close();
+
+            var lines = fullText.split("\n");
+
+            for (var i = 0; i < lines.length; i++) {
+                var entry = lines[i].split(",");
+
+                if (entry.length === 7) {
+                    // Parse csv
+                    var seconds = parseInt(entry[0]) * 3600 + parseInt(entry[1]) * 60 + parseInt(entry[2]) + (parseInt(entry[3]) / 1000);
+                    var mode = entry[4];
+                    var message = entry[5];
+                    var color = entry[6];
+
+                    // Insert clip
+                    var markerChild = helper.getMarkerItemInMarkerFolder(color);
+                    var targetInSeconds = currentPlayheadPosition.seconds + seconds;
+                    markerLayer.overwriteClip(markerChild, targetInSeconds);
+
+                    // Retrieve clip
+                    var clip = helper.getLastUnnamedMarkerClip();
+
+                    // Set name
+                    clip.name = message;
+
+                    // Set length
+                    if (mode === "mode") {
+                        // If mode == mode, get next item with mode mode and calculate length
+                        var nextItemSeconds = -1;
+                        for (var j = i + 1; j < lines.length; j++) {
+                            var newEntry = lines[j].split(",");
+                            var nextSeconds = parseInt(newEntry[0]) * 3600 + parseInt(newEntry[1]) * 60 + parseInt(newEntry[2]) + (parseInt(newEntry[3]) / 1000);
+                            var nextMode = newEntry[4];
+
+                            if (nextMode === "mode") {
+                                nextItemSeconds = nextSeconds;
+                                break;
+                            }
+                        }
+                        if (nextItemSeconds > 0) {
+                            var endTime = new Time;
+                            endTime.seconds = nextItemSeconds + currentPlayheadPosition.seconds;
+                            clip.end = endTime;
+                        }
+                    }
+                }
+            }
+        }
     }
 };
 
@@ -215,6 +346,7 @@ var host = {
  * Define your helping functions here, these are NOT published on localhost.
  */
 var helper = {
+    projectFrameRate: 24,
     /**
      * Returns the specified track using the QE DOM.
      * @param isVideoTrack true, if the specified track is video
@@ -231,11 +363,22 @@ var helper = {
         }
         return track;
     },
+    fixPlayHeadPosition: function(frameRate) {
+        var currentSequence = app.project.activeSequence;
+        var currentPlayheadPosition = currentSequence.getPlayerPosition().ticks;
+        var ticksPerSecond = 254016000000;
+        var ticksPerFrame = ticksPerSecond / parseInt(frameRate);
+        var newPos = Math.ceil(parseInt(currentPlayheadPosition) / ticksPerFrame);
+
+        currentSequence.setPlayerPosition(newPos * ticksPerFrame);
+    },
     getCurrentMarkerClip: function () {
         var currentSequence = app.project.activeSequence;
         var markerLayer = currentSequence.videoTracks[currentSequence.videoTracks.numTracks - 1];
         var markerClips = markerLayer.clips;
         var markerCount = markerClips.numItems;
+
+        helper.fixPlayHeadPosition(helper.projectFrameRate);
         var currentPlayheadPosition = currentSequence.getPlayerPosition().ticks;
 
         for (var i = 0; i < markerCount; i++) {
@@ -253,6 +396,81 @@ var helper = {
         var s = num + "";
         while (s.length < size) s = "0" + s;
         return s;
+    },
+    getProjectItemInRoot: function (itemName) {
+        var projectItem = undefined;
+
+        for (var i = 0; i < app.project.rootItem.children.numItems; i++) {
+
+            var child = app.project.rootItem.children[i];
+            if (child.name === itemName) {
+                projectItem = child;
+                break;
+            }
+        }
+
+        return projectItem;
+    },
+    getMarkerItemInMarkerFolder: function (markerColor) {
+        var projectItem = undefined;
+
+        for (var i = 0; i < app.project.rootItem.children.numItems; i++) {
+
+            var child = app.project.rootItem.children[i];
+
+            if (child.name === "marker") {
+                for (var j = 0; j < child.children.numItems; j++) {
+
+                    var markerChild = child.children[j];
+
+                    if (markerChild.name === markerColor) {
+                        return markerChild;
+                    }
+                }
+            }
+        }
+        return undefined;
+    },
+    getMarkerClip: function (timestamp) {
+        var currentSequence = app.project.activeSequence;
+        var markerLayer = currentSequence.videoTracks[currentSequence.videoTracks.numTracks - 1];
+        var markerClips = markerLayer.clips;
+        var markerCount = markerClips.numItems;
+        var timestampInTicks = (timestamp + 1) * 254016000000;
+        // Hack to get rid of rounding problems, converted to ticks
+        // FIXME: More than one marker per second not supported
+
+        for (var i = 0; i < markerCount; i++) {
+            var clip = markerClips[i];
+            var startTicks = clip.start.ticks;
+            var endTicks = clip.end.ticks;
+
+            if (parseInt(startTicks) <= parseInt(timestampInTicks)
+                && parseInt(timestampInTicks) < parseInt(endTicks)) {
+                return clip;
+            }
+        }
+    },
+    getLastUnnamedMarkerClip: function() {
+        var currentSequence = app.project.activeSequence;
+        var markerLayer = currentSequence.videoTracks[currentSequence.videoTracks.numTracks - 1];
+        var markerClips = markerLayer.clips;
+        var markerCount = markerClips.numItems;
+    
+        var lastMarker = markerClips[markerCount - 1];
+        debugger;
+    
+        // Dirty coded dirty hack, premiere is... not exact with its ticks?!
+        // If last marker has no name = This is my new marker. If it has a name -> streatched mode marker
+        if (lastMarker.name === "0" || lastMarker.name === "1" || lastMarker.name === "2" ||
+            lastMarker.name === "3" || lastMarker.name === "4" || lastMarker.name === "5" ||
+            lastMarker.name === "6" || lastMarker.name === "7" || lastMarker.name === "8" ||
+            lastMarker.name === "9" || lastMarker.name === "10" || lastMarker.name === "11" ||
+            lastMarker.name === "12" || lastMarker.name === "13" || lastMarker.name === "14" ||
+            lastMarker.name === "15") {
+            return lastMarker;
+        }
+        return markerClips[markerCount - 2];
     }
 };
 
